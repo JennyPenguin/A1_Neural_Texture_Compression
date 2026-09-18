@@ -56,9 +56,7 @@ def test_bilinear_downsample(img, down_size):
 def compare_float_mat(m1, m2, e = 1e-5):
     return np.allclose(m1, m2, atol=e)
 
-
-img = load_image("textures/clouds.png")
+img = load_image("textures/gradient.png")
 downsampled = test_bilinear_downsample(img, 1)
-converted = downsampled.astype(np.uint8)
-print(np.max(img - converted))
-Image.fromarray(converted).save("textures/gradient copy.png")
+converted = np.round(downsampled).astype(np.uint8)
+# Image.fromarray(converted).save("textures/gradient copy.png")
