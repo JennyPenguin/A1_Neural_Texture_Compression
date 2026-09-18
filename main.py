@@ -43,7 +43,7 @@ def test_bilinear_downsample(img, down_size):
     height //= down_size
     width //= down_size
     def sample_coord(r, c):
-        return sample(c / width, r / height, img)
+        return sample((c + 0.5) / width, (r + 0.5) / height, img)
     # Inefficient but easy way of testing image
     downsampled = []
     for r in range(height):
@@ -53,14 +53,12 @@ def test_bilinear_downsample(img, down_size):
             row.append(sample_coord(r, c))
     return np.array(downsampled)
 
-def compare_float_mat(m1, m2, e = 0.01):
-    return np.allclose(m1, m2, rtol=e, atol=e)
+def compare_float_mat(m1, m2, e = 1e-5):
+    return np.allclose(m1, m2, atol=e)
 
 
-img = load_image("textures/gradient.png")
-print(img.shape)
-# print(sample(0.2, 0.3, img))
+img = load_image("textures/clouds.png")
 downsampled = test_bilinear_downsample(img, 1)
 converted = downsampled.astype(np.uint8)
-print(compare_float_mat(downsampled, img))
-Image.fromarray(converted).save("textures/gradient_downsampled_1.png")
+print(np.max(img - converted))
+Image.fromarray(converted).save("textures/gradient copy.png")
