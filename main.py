@@ -276,6 +276,24 @@ def build_input_ouput_pairs(img):
             target[r * w + c] = img[r, c, :]
     return (torch.from_numpy(coords).float(), torch.from_numpy(target).float())
 
+def quantize_uint8(x):
+    lo, hi = torch.min(x), torch.max(x)              # x = one array of float32 values
+    scale  = (hi - lo) / 255             # 256 levels (8 bits)
+    q      = torch.round((x - lo) / scale)     # integer index in [0, 255]
+    x_hat  = lo + q * scale              # dequantized value used at decode
+    return q, lo, scale, x_hat
+
+def quantize_model(model, quantize_mlp=False):
+    # each feature-grid level: its own lo/scale, stored as 8-bit q
+    for grid in model.grid.grids:
+        q, lo, scale, x_hat = quantize_uint8(grid.data)
+        grid.data.copy_(x_hat)
+
+    # the MLP is tiny -- quantizing it is optional
+    if quantize_mlp:
+        for p in model.mlp.parameters():
+            q, lo, scale, x_hat = quantize_uint8(p.data)
+            p.data.copy_(x_hat)
 
 ###############################################################################
 #                               Main Loop                                    #
@@ -288,8 +306,8 @@ runs = [
     ("Medium", (16, 32, 64), 2),
     ("Large", (16, 32, 64, 128), 4)
 ]
-# images = ["gradient", "bricks", "clouds"]
-images = ["starry_back", "time_spiral"]
+images = ["gradient", "bricks", "clouds"]
+# images = ["starry_back", "time_spiral"]
 for image in images:
     img = load_image(f"textures/{image}.png")
     img = normalize_image(img)
@@ -322,6 +340,9 @@ for image in images:
             loss = criterion(predictions, batch_target)
             opt.zero_grad(); loss.backward(); opt.step()
 
+        # for quantize in range(2):
+            # if quantize:
+        quantize_model(model, quantize_mlp=False)
         # Get final PSNR
         predictions = model.forward(coords)
         final_loss = criterion(predictions, target)
