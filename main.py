@@ -184,12 +184,12 @@ def S3TC_decode(img: np.ndarray):
 #`                               Main Loop                                    #
 ###############################################################################
 
-image = "gradient"
+image = "bricks"
 
 img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
 encoded = S3TC_encode(img)
-S3TC_save_encoded(encoded, f"textures/{image}.png")
+S3TC_save_encoded(encoded, f"textures/{image}_encoded.png")
 decoded = S3TC_decode(encoded)
 converted = denormalize_image(decoded)
 # downsampled = test_bilinear_downsample(img, 1)
