@@ -1,14 +1,21 @@
 import numpy as np
 import numpy.typing as npt
 import math
-
-# Self Modules
-import pytorch_helpers
+import torch, torch.nn as nn, torch.nn.functional as F
 from PIL import Image
 
 ###############################################################################
 #`                              Image Helpers                                 #
 ###############################################################################
+def get_device():
+    # for Nvidia GPU
+    # if torch.cuda.is_available():
+    #     return "cuda"
+    # # for Apple Silicon
+    # if torch.backends.mps.is_available():
+    #     return "mps"
+    return "cpu"
+
 """ Load image with values all in [0, 255] range.
 [in]    path:str    Path name of image to load   
 [out]   Loaded image, each pixel is stored as a byte (0-255)
@@ -196,22 +203,151 @@ def S3TC_decode(img: np.ndarray):
     return reconstructed_img
 
 ###############################################################################
-#`                               Main Loop                                    #
+#`                          Neural                                     #
 ###############################################################################
 
-image = "bricks"
+class FeatureGrid(nn.Module):
+    def __init__(self, resolutions=(16, 32, 64, 128), feat_dim=2):
+        super().__init__()
 
+        # one learnable grid per resolution, each shaped (1, feat_dim, R, R)
+        self.grids = nn.ParameterList()
+        for res in resolutions:
+            # (batch size = 1 bc cannot process different res image dimesnion together, # channels = # features, height, width)
+            res_grid = torch.randn(1, feat_dim, res, res) * 0.01
+            self.grids.append(res_grid)
+        self.out_dim = feat_dim * len(resolutions)
+
+    def forward(self, uv):   # uv: (N, 2) in [0, 1], N = batch size
+        # bilinear-sample each grid at uv (see F.grid_sample, which wants
+        # coords in [-1, 1]) and concatenate the features across resolutions
+
+        # Transform to [-1, 1]
+        uv = uv * 2.0 - 1.0
+        N = uv.shape[0]
+        batch_uv = uv.reshape(1, N, 1, 2)
+
+        res = torch.tensor([])
+        for grid in self.grids:
+            res_feature = F.grid_sample(grid, batch_uv ,mode='bilinear', padding_mode="border", align_corners=False)
+            # Output dimensin : (1, F, N, 1)
+            res_feature = (res_feature.squeeze()).T
+            res = torch.cat([res, res_feature], dim=-1)
+        return res # (N, out_dim)
+
+class ColorMLP(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        # 2 hidden layers of width 64 (Linear + ReLU), then Linear -> 3 and a Sigmoid (RGB in [0, 1])
+
+        # Hidden layer 1
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 64),
+            nn.ReLU(),
+            nn.Linear(in_features=64, out_features=64),
+            nn.ReLU(),
+            nn.Linear(in_features=64, out_features=3),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class NeuralTexture(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.grid = FeatureGrid()
+        self.mlp  = ColorMLP(self.grid.out_dim)
+    def forward(self, uv):
+        return self.mlp(self.grid(uv))
+
+# Because texel centered coordinates, can just directly take color from image
+def build_input_ouput_pairs(img):
+    w, h, _ = img.shape
+    N = w * h
+    coords = np.zeros((N, 2))
+    target = np.zeros((N, 3))
+    for r in range(h):
+        for c in range(w):
+            # want coordinate to be u, v
+            coords[r * h + c] = [(c + 0.5) / w, (r + 0.5) / h]
+            target[r * h + c] = img[r, c, :]
+    return (torch.from_numpy(coords).float(), torch.from_numpy(target).float())
+
+
+###############################################################################
+#                               Main Loop                                    #
+###############################################################################
+
+image = "hippo"
 img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
-encoded = S3TC_encode(img)
-(Image.fromarray(encoded, mode='RGBA')).save(f"textures/{image}_encoded.png")
-decoded = S3TC_decode(encoded)
-converted = denormalize_image(decoded)
-# downsampled = test_bilinear_downsample(img, 1)
-# converted = np.round(downsampled).astype(np.uint8)
-Image.fromarray(converted).save(f"textures/{image}_compressed.png")
 
-reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
-decoded2 = S3TC_decode(reload_decoded_img)
-converted2 = denormalize_image(decoded2)
-Image.fromarray(converted2).save(f"textures/{image}_compressed2.png")
+BATCH_SIZE = 16384
+
+# build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
+coords, target = build_input_ouput_pairs(img)
+# coords.to(device)
+# target.to(device)
+
+model = NeuralTexture().to(get_device())
+opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+# Size of image
+N = coords.shape[0]
+possible_indices = np.arange(N)
+
+criterion = nn.MSELoss()
+
+for step in range(2000):
+    # sample a minibatch of coords
+    mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
+    mini_batch_indices = torch.from_numpy(mini_batch_indices)
+
+    batch_coords = coords[mini_batch_indices]
+    batch_target = target[mini_batch_indices]
+
+    # predict colors, outputs has dimensions (BATCH_SIZE, 2)
+    predictions = model.forward(batch_coords)
+
+    # MSE loss vs target 
+    diff = predictions - batch_target
+    loss = criterion(predictions, batch_target)
+    opt.zero_grad(); loss.backward(); opt.step()
+
+    # PSNR from the loss:  psnr = -10 * torch.log10(loss)
+    PSNR = -10.0 * torch.log10(loss)
+
+predicted_colors = (model.forward(coords)).detach().numpy()
+reconstructed_img = np.zeros(img.shape)
+w, h, _ = img.shape
+for r in range(h):
+    for c in range(w):
+        reconstructed_img[r, c, :] = predicted_colors[r * h + c]
+converted = denormalize_image(reconstructed_img)
+Image.fromarray(converted).save(f"textures/{image}_NN_compressed.png")
+
+
+
+# img = load_image(f"textures/{image}.png")
+# img = normalize_image(img)
+# encoded = S3TC_encode(img)
+# (Image.fromarray(encoded, mode='RGBA')).save(f"textures/{image}_encoded.png")
+# decoded = S3TC_decode(encoded)
+# converted = denormalize_image(decoded)
+# # downsampled = test_bilinear_downsample(img, 1)
+# # converted = np.round(downsampled).astype(np.uint8)
+# Image.fromarray(converted).save(f"textures/{image}_compressed.png")
+
+# reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
+# decoded2 = S3TC_decode(reload_decoded_img)
+# converted2 = denormalize_image(decoded2)
+# Image.fromarray(converted2).save(f"textures/{image}_compressed2.png")
+
+
+###############################################################################
+#                              Main Loop 2                                    #
+###############################################################################
+
+
+
