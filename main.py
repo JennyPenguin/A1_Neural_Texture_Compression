@@ -254,9 +254,9 @@ class ColorMLP(nn.Module):
         return self.net(x)
 
 class NeuralTexture(nn.Module):
-    def __init__(self):
+    def __init__(self, resolutions, feature_dim):
         super().__init__()
-        self.grid = FeatureGrid()
+        self.grid = FeatureGrid(resolutions=resolutions, feat_dim=feature_dim)
         self.mlp  = ColorMLP(self.grid.out_dim)
     def forward(self, uv):
         return self.mlp(self.grid(uv))
@@ -279,7 +279,7 @@ def build_input_ouput_pairs(img):
 #                               Main Loop                                    #
 ###############################################################################
 
-image = "hippo"
+image = "gradient"
 img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
 
@@ -287,45 +287,53 @@ BATCH_SIZE = 16384
 
 # build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
 coords, target = build_input_ouput_pairs(img)
-# coords.to(device)
-# target.to(device)
 
-model = NeuralTexture().to(get_device())
-opt = torch.optim.Adam(model.parameters(), lr=1e-2)
 
-# Size of image
-N = coords.shape[0]
-possible_indices = np.arange(N)
+runs = [
+    ("Small", (64,), 2),
+    ("Medium", (16, 32, 64), 2),
+    ("Large", (16, 32, 64, 128), 4)
+]
 
-criterion = nn.MSELoss()
+for size, resolutions, feature_dim in runs:
+    model = NeuralTexture(resolutions, feature_dim).to(get_device())
+    opt = torch.optim.Adam(model.parameters(), lr=1e-2)
 
-for step in range(2000):
-    # sample a minibatch of coords
-    mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
-    mini_batch_indices = torch.from_numpy(mini_batch_indices)
+    # Size of image
+    N = coords.shape[0]
+    possible_indices = np.arange(N)
 
-    batch_coords = coords[mini_batch_indices]
-    batch_target = target[mini_batch_indices]
+    criterion = nn.MSELoss()
 
-    # predict colors, outputs has dimensions (BATCH_SIZE, 2)
-    predictions = model.forward(batch_coords)
+    for step in range(2000):
+        # sample a minibatch of coords
+        mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
+        mini_batch_indices = torch.from_numpy(mini_batch_indices)
 
-    # MSE loss vs target 
-    diff = predictions - batch_target
-    loss = criterion(predictions, batch_target)
-    opt.zero_grad(); loss.backward(); opt.step()
+        batch_coords = coords[mini_batch_indices]
+        batch_target = target[mini_batch_indices]
+
+        # predict colors, outputs has dimensions (BATCH_SIZE, 2)
+        predictions = model.forward(batch_coords)
+
+        # MSE loss vs target 
+        diff = predictions - batch_target
+        loss = criterion(predictions, batch_target)
+        opt.zero_grad(); loss.backward(); opt.step()
 
     # PSNR from the loss:  psnr = -10 * torch.log10(loss)
     PSNR = -10.0 * torch.log10(loss)
+    print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\t\tfeature_dim {feature_dim}\tMLP 2 x 64\t\tImage{image}")
+    print(f"PSNR: {PSNR}")
 
-predicted_colors = (model.forward(coords)).detach().numpy()
-reconstructed_img = np.zeros(img.shape)
-w, h, _ = img.shape
-for r in range(h):
-    for c in range(w):
-        reconstructed_img[r, c, :] = predicted_colors[r * h + c]
-converted = denormalize_image(reconstructed_img)
-Image.fromarray(converted).save(f"textures/{image}_NN_compressed.png")
+    predicted_colors = (model.forward(coords)).detach().numpy()
+    reconstructed_img = np.zeros(img.shape)
+    w, h, _ = img.shape
+    for r in range(h):
+        for c in range(w):
+            reconstructed_img[r, c, :] = predicted_colors[r * h + c]
+    converted = denormalize_image(reconstructed_img)
+    Image.fromarray(converted).save(f"textures/{image}_NN_compressed.png")
 
 
 
