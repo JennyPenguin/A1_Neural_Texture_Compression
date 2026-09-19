@@ -23,7 +23,9 @@ def get_device():
 def load_image(path: str, rgba = False):
     img = Image.open(path)
     if rgba:
-        img.convert('RGBA')
+        img = img.convert('RGBA')
+    else:
+        img = img.convert("RGB")
     return np.asarray(img)
 
 ###############################################################################
@@ -263,15 +265,15 @@ class NeuralTexture(nn.Module):
 
 # Because texel centered coordinates, can just directly take color from image
 def build_input_ouput_pairs(img):
-    w, h, _ = img.shape
+    h, w, _ = img.shape
     N = w * h
     coords = np.zeros((N, 2))
     target = np.zeros((N, 3))
     for r in range(h):
         for c in range(w):
             # want coordinate to be u, v
-            coords[r * h + c] = [(c + 0.5) / w, (r + 0.5) / h]
-            target[r * h + c] = img[r, c, :]
+            coords[r * w + c] = [(c + 0.5) / w, (r + 0.5) / h]
+            target[r * w + c] = img[r, c, :]
     return (torch.from_numpy(coords).float(), torch.from_numpy(target).float())
 
 
@@ -279,61 +281,64 @@ def build_input_ouput_pairs(img):
 #                               Main Loop                                    #
 ###############################################################################
 
-image = "gradient"
-img = load_image(f"textures/{image}.png")
-img = normalize_image(img)
-
 BATCH_SIZE = 16384
-
-# build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
-coords, target = build_input_ouput_pairs(img)
-
 
 runs = [
     ("Small", (64,), 2),
     ("Medium", (16, 32, 64), 2),
     ("Large", (16, 32, 64, 128), 4)
 ]
+# images = ["gradient", "bricks", "clouds"]
+images = ["starry_back", "time_spiral"]
+for image in images:
+    img = load_image(f"textures/{image}.png")
+    img = normalize_image(img)
 
-for size, resolutions, feature_dim in runs:
-    model = NeuralTexture(resolutions, feature_dim).to(get_device())
-    opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+    # build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
+    coords, target = build_input_ouput_pairs(img)
+    
+    for size, resolutions, feature_dim in runs:
+        model = NeuralTexture(resolutions, feature_dim).to(get_device())
+        opt = torch.optim.Adam(model.parameters(), lr=1e-2)
 
-    # Size of image
-    N = coords.shape[0]
-    possible_indices = np.arange(N)
+        # Size of image
+        N = coords.shape[0]
+        possible_indices = np.arange(N)
 
-    criterion = nn.MSELoss()
+        criterion = nn.MSELoss()
 
-    for step in range(2000):
-        # sample a minibatch of coords
-        mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
-        mini_batch_indices = torch.from_numpy(mini_batch_indices)
+        for step in range(2000):
+            # sample a minibatch of coords
+            mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
+            mini_batch_indices = torch.from_numpy(mini_batch_indices)
 
-        batch_coords = coords[mini_batch_indices]
-        batch_target = target[mini_batch_indices]
+            batch_coords = coords[mini_batch_indices]
+            batch_target = target[mini_batch_indices]
 
-        # predict colors, outputs has dimensions (BATCH_SIZE, 2)
-        predictions = model.forward(batch_coords)
+            # predict colors, outputs has dimensions (BATCH_SIZE, 2)
+            predictions = model.forward(batch_coords)
 
-        # MSE loss vs target 
-        diff = predictions - batch_target
-        loss = criterion(predictions, batch_target)
-        opt.zero_grad(); loss.backward(); opt.step()
+            # MSE loss vs target 
+            loss = criterion(predictions, batch_target)
+            opt.zero_grad(); loss.backward(); opt.step()
 
-    # PSNR from the loss:  psnr = -10 * torch.log10(loss)
-    PSNR = -10.0 * torch.log10(loss)
-    print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\t\tfeature_dim {feature_dim}\tMLP 2 x 64\t\tImage{image}")
-    print(f"PSNR: {PSNR}")
+        # Get final PSNR
+        predictions = model.forward(coords)
+        final_loss = criterion(predictions, target)
 
-    predicted_colors = (model.forward(coords)).detach().numpy()
-    reconstructed_img = np.zeros(img.shape)
-    w, h, _ = img.shape
-    for r in range(h):
-        for c in range(w):
-            reconstructed_img[r, c, :] = predicted_colors[r * h + c]
-    converted = denormalize_image(reconstructed_img)
-    Image.fromarray(converted).save(f"textures/{image}_NN_compressed.png")
+        # PSNR from the loss:  psnr = -10 * torch.log10(loss)
+        PSNR = -10.0 * torch.log10(final_loss)
+        print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\tfeature_dim {feature_dim}\tMLP 2 x 64\tImage: {image}")
+        print(f"PSNR: {PSNR}")
+
+        predicted_colors = (model.forward(coords)).detach().numpy()
+        reconstructed_img = np.zeros(img.shape)
+        h, w, _ = img.shape
+        for r in range(h):
+            for c in range(w):
+                reconstructed_img[r, c, :] = predicted_colors[r * w + c]
+        converted = denormalize_image(reconstructed_img)
+        Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}.png")
 
 
 
