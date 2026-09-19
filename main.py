@@ -13,8 +13,11 @@ from PIL import Image
 [in]    path:str    Path name of image to load   
 [out]   Loaded image, each pixel is stored as a byte (0-255)
 """
-def load_image(path: str):
-    return np.asarray(Image.open(path))
+def load_image(path: str, rgba = False):
+    img = Image.open(path)
+    if rgba:
+        img.convert('RGBA')
+    return np.asarray(img)
 
 ###############################################################################
 #`                       Bilinear Interpolation`                              #
@@ -177,10 +180,6 @@ def S3TC_encode(img: np.ndarray):
             res[r, 2 * c + 1] = split_32_bits(indices)
     return res
 
-def S3TC_save_encoded(img: np.ndarray, path: str):
-    img = Image.fromarray(img)
-    img.save(path)
-    
 """ Decompress an S3TC encoded image into a normal image with values in [0, 1]
 [in]    img:np.ndarry   S3TC mage to decompress
 [out]   Decompressed image
@@ -200,14 +199,19 @@ def S3TC_decode(img: np.ndarray):
 #`                               Main Loop                                    #
 ###############################################################################
 
-image = "gradient"
+image = "bricks"
 
 img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
 encoded = S3TC_encode(img)
-S3TC_save_encoded(encoded, f"textures/{image}_encoded.bmp")
+(Image.fromarray(encoded, mode='RGBA')).save(f"textures/{image}_encoded.png")
 decoded = S3TC_decode(encoded)
 converted = denormalize_image(decoded)
 # downsampled = test_bilinear_downsample(img, 1)
 # converted = np.round(downsampled).astype(np.uint8)
 Image.fromarray(converted).save(f"textures/{image}_compressed.png")
+
+reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
+decoded2 = S3TC_decode(reload_decoded_img)
+converted2 = denormalize_image(decoded2)
+Image.fromarray(converted2).save(f"textures/{image}_compressed2.png")
