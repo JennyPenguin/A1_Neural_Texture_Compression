@@ -144,6 +144,21 @@ def S3TC_decode_square(color_encoded, indices_encoded):
 
     return square
 
+def split_32_bits(org: np.uint32):
+    mask8 = 0xFF
+    res = []
+    for _ in range(4):
+        res.append(org & mask8)
+        org = org >> 8
+    return np.array(res).astype(np.uint8)
+
+def combine_32_bits(org: np.ndarray):
+    # size of ndarray should be 4
+    res = np.uint32(0)
+    for i in range(4):
+        res |= np.uint32(org[i]) << (i * 8)
+    return np.array(res)
+
 # TODO: Make this work for any dimension
 # TODO: Write with faster numpy operations
 """ Compress a normal image with values in range [0, 1] and only RGB channels
@@ -154,16 +169,16 @@ Only works on images that have dimensions which are multiples of 4. It not multi
 def S3TC_encode(img: np.ndarray):
     shape = img.shape
     new_h, new_w = shape[0] // 4, shape[1] // 4
-    res = np.zeros((new_h, new_w * 2)).astype(np.uint32)
+    res = np.zeros((new_h, new_w * 2, 4)).astype(np.uint8)
     for r in range(new_h):
         for c in range(new_w):
             (color, indices) = S3TC_encode_square(img, r * 4, c * 4)
-            res[r, 2 * c] = color
-            res[r, 2 * c + 1] = indices
+            res[r, 2 * c] = split_32_bits(color)
+            res[r, 2 * c + 1] = split_32_bits(indices)
     return res
 
 def S3TC_save_encoded(img: np.ndarray, path: str):
-    img = Image.fromarray(img, mode="I")
+    img = Image.fromarray(img)
     img.save(path)
     
 """ Decompress an S3TC encoded image into a normal image with values in [0, 1]
@@ -176,7 +191,8 @@ def S3TC_decode(img: np.ndarray):
     reconstructed_img = np.zeros((h * 4, w * 4, 3))
     for r in range(h):
         for c in range(w):
-            color_encoded, indices_encoded = img[r, 2 * c], img[r, 2 * c + 1]
+            color_encoded = combine_32_bits(img[r, 2 * c])
+            indices_encoded = combine_32_bits(img[r, 2 * c + 1])
             reconstructed_img[4*r:4*r+4, 4*c:4*c+4, :] = S3TC_decode_square(color_encoded, indices_encoded)
     return reconstructed_img
 
@@ -184,12 +200,12 @@ def S3TC_decode(img: np.ndarray):
 #`                               Main Loop                                    #
 ###############################################################################
 
-image = "bricks"
+image = "gradient"
 
 img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
 encoded = S3TC_encode(img)
-S3TC_save_encoded(encoded, f"textures/{image}_encoded.png")
+S3TC_save_encoded(encoded, f"textures/{image}_encoded.bmp")
 decoded = S3TC_decode(encoded)
 converted = denormalize_image(decoded)
 # downsampled = test_bilinear_downsample(img, 1)
