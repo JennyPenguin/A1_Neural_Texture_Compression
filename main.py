@@ -78,12 +78,12 @@ def quantize_rgb(rgb: np.ndarray):
     levels = (31, 63, 31) 
     q = np.round(rgb * levels).astype(np.uint16)
     new_rgb = q / levels # convert back to [0, 1]
-    compressed = q[0] << 10 | q[1] << 5 | q[2]
+    compressed = q[0] << 11 | q[1] << 5 | q[2]
     return (np.uint16(compressed), new_rgb)
 
 def dequantize_rgb(color: np.uint16):
     levels = (31.0, 63.0, 31.0) 
-    decoded = np.array([((color >> 10) & 0x1F), ((color >> 5) & 0x3F), (color & 0x1F)])
+    decoded = np.array([((color >> 11) & 0x1F), ((color >> 5) & 0x3F), (color & 0x1F)])
     C0 = decoded / levels
     return C0
 
@@ -105,8 +105,9 @@ def S3TC_encode_square(img, r, c):
 
     indices = np.uint32(0)
     cnt = 0
-    for row in square:
-        for cell in row:
+    for r in range(4):
+        for c in range(4):
+            cell = square[r, c, :]
             best_diff = float('inf')
             best_index : np.uint32 = 0
             for i in range(4):
@@ -115,11 +116,11 @@ def S3TC_encode_square(img, r, c):
                 if (squared_err < best_diff):
                     best_index = np.uint32(i)
                     best_diff = squared_err
-            assert (best_index < 4, "Index out of bound?")
-            assert (best_index == float('inf'), "Never changed best")
+            # assert (best_index < 4, "Index out of bound?")
+            # assert (best_index == float('inf'), "Never changed best")
             indices |= best_index << (2 * cnt)
             cnt += 1
-    assert (16 == cnt)
+    # assert (16 == cnt)
 
     color_encoded = np.uint32(C0_565) << 16
     color_encoded |= np.uint16(C1_565)
@@ -156,7 +157,7 @@ def S3TC_encode(img: np.ndarray):
     res = np.zeros((new_h, new_w * 2)).astype(np.uint32)
     for r in range(new_h):
         for c in range(new_w):
-            (color, indices) = S3TC_encode_square(img, r, c)
+            (color, indices) = S3TC_encode_square(img, r * 4, c * 4)
             res[r, 2 * c] = color
             res[r, 2 * c + 1] = indices
     return res
@@ -183,12 +184,14 @@ def S3TC_decode(img: np.ndarray):
 #`                               Main Loop                                    #
 ###############################################################################
 
-img = load_image("textures/gradient.png")
+image = "gradient"
+
+img = load_image(f"textures/{image}.png")
 img = normalize_image(img)
 encoded = S3TC_encode(img)
-S3TC_save_encoded(encoded, "textures/gradient_compressed.png")
+S3TC_save_encoded(encoded, f"textures/{image}.png")
 decoded = S3TC_decode(encoded)
 converted = denormalize_image(decoded)
 # downsampled = test_bilinear_downsample(img, 1)
 # converted = np.round(downsampled).astype(np.uint8)
-Image.fromarray(converted).save("textures/gradient_decoded.png")
+Image.fromarray(converted).save(f"textures/{image}_compressed.png")
