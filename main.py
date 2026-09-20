@@ -279,7 +279,9 @@ def build_input_ouput_pairs(img):
 def quantize_uint8(x):
     lo, hi = torch.min(x), torch.max(x)              # x = one array of float32 values
     scale  = (hi - lo) / 255             # 256 levels (8 bits)
-    q      = torch.round((x - lo) / scale)     # integer index in [0, 255]
+    q = 0
+    if scale > 0:
+        q = torch.round((x - lo) / scale)     # integer index in [0, 255]
     x_hat  = lo + q * scale              # dequantized value used at decode
     return q, lo, scale, x_hat
 
@@ -359,7 +361,7 @@ for image in images:
             for c in range(w):
                 reconstructed_img[r, c, :] = predicted_colors[r * w + c]
         converted = denormalize_image(reconstructed_img)
-        Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}.png")
+        Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}_q.png")
 
 
 
