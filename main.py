@@ -4,16 +4,19 @@ import math
 import torch, torch.nn as nn, torch.nn.functional as F
 from PIL import Image
 
+# To create training PSNR change plot
+import matplotlib.pyplot as plt
+
 ###############################################################################
 #`                              Image Helpers                                 #
 ###############################################################################
 def get_device():
     # for Nvidia GPU
-    # if torch.cuda.is_available():
-    #     return "cuda"
-    # # for Apple Silicon
-    # if torch.backends.mps.is_available():
-    #     return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    # for Apple Silicon
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 """ Load image with values all in [0, 255] range.
@@ -251,7 +254,7 @@ class FeatureGrid(nn.Module):
         self.grids = nn.ParameterList()
         for res in resolutions:
             # (batch size = 1 bc cannot process different res image dimesnion together, # channels = # features, height, width)
-            res_grid = torch.randn(1, feat_dim, res, res) * 0.01
+            res_grid = torch.randn(1, feat_dim, res, res, device=get_device()) * 0.01
             self.grids.append(res_grid)
         self.out_dim = feat_dim * len(resolutions)
 
@@ -264,7 +267,7 @@ class FeatureGrid(nn.Module):
         N = uv.shape[0]
         batch_uv = uv.reshape(1, N, 1, 2)
 
-        res = torch.tensor([])
+        res = torch.tensor([]).to(get_device())
         for grid in self.grids:
             res_feature = F.grid_sample(grid, batch_uv ,mode='bilinear', padding_mode="border", align_corners=False)
             # Output dimensin : (1, F, N, 1)
@@ -295,10 +298,12 @@ class NeuralTexture(nn.Module):
         super().__init__()
         self.grid = FeatureGrid(resolutions=resolutions, feat_dim=feature_dim)
         self.mlp  = ColorMLP(self.grid.out_dim)
+
     def forward(self, uv):
         return self.mlp(self.grid(uv))
 
 # Because texel centered coordinates, can just directly take color from image
+# The output tensors lives on the GPU!
 def build_input_ouput_pairs(img):
     h, w, _ = img.shape
     N = w * h
@@ -309,7 +314,75 @@ def build_input_ouput_pairs(img):
             # want coordinate to be u, v
             coords[r * w + c] = [(c + 0.5) / w, (r + 0.5) / h]
             target[r * w + c] = img[r, c, :]
-    return (torch.from_numpy(coords).float(), torch.from_numpy(target).float())
+    return (torch.from_numpy(coords).float().to(get_device()), torch.from_numpy(target).float().to(get_device()))
+
+BATCH_SIZE = 16384
+
+# Input image should be normalized
+def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: str, runs, color="blue"):
+    for size, resolutions, feature_dim, line_style in runs:
+        model = NeuralTexture(resolutions, feature_dim).to(get_device())
+        opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+    
+        # Size of image
+        N = coords.shape[0]
+        possible_indices = np.arange(N)
+    
+        criterion_MSE = nn.MSELoss()
+
+        x = np.arange(2000)
+        y = np.zeros((2000,))
+    
+        for i in range(2000):
+            # Sample a minibatch of coords. Normally would cycle through a 
+            # random permutation of train samples but writeup says to just take
+            # a random sample.
+            mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
+            mini_batch_indices = torch.from_numpy(mini_batch_indices)
+    
+            batch_coords = coords[mini_batch_indices]
+            batch_target = target[mini_batch_indices]
+    
+            # predict colors, outputs has dimensions (BATCH_SIZE, 2)
+            predictions = model.forward(batch_coords)
+    
+            # MSE loss vs target 
+            loss = criterion_MSE(predictions, batch_target)
+            PSNR = -10.0 * torch.log10(loss)
+            y[i] = PSNR.item()
+            opt.zero_grad(); loss.backward(); opt.step()
+
+        plt.plot(x, y, label=f"{image} - {size}", color=color, linestyle=line_style)
+    
+        # save non-quantized first and then quantized
+        for q in range(2):
+            if q == 1:
+                quantize_model(model, quantize_mlp=False)
+                print("!!!!!!!!!!!!!!!!!Quantized Results!!!!!!!!!!!!!!!!!!!!")
+
+            # Get final PSNR
+            predictions = model.forward(coords)
+            final_loss = criterion_MSE(predictions, target)
+        
+            # PSNR from the loss:  psnr = -10 * torch.log10(loss)
+            PSNR = -10.0 * torch.log10(final_loss)
+            print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\tfeature_dim {feature_dim}\tMLP 2 x 64\tImage: {image}")
+            print(f"PSNR: {PSNR}")
+
+            # Copy to CPU and then convert to numpy
+            predicted_colors = predictions.detach().cpu().numpy()
+            reconstructed_img = np.zeros(img.shape)
+            h, w, _ = img.shape
+            for r in range(h):
+                for c in range(w):
+                    reconstructed_img[r, c, :] = predicted_colors[r * w + c]
+            converted = denormalize_image(reconstructed_img)
+            q_trail = "_q" if q == 1 else ""
+            Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}{q_trail}.png")
+
+###############################################################################
+#                           Quantization                                      #
+###############################################################################
 
 def quantize_uint8(x):
     lo, hi = torch.min(x), torch.max(x)              # x = one array of float32 values
@@ -333,75 +406,33 @@ def quantize_model(model, quantize_mlp=False):
             p.data.copy_(x_hat)
 
 ###############################################################################
-#                        Neural  Main Loop                                    #
+#                        Neural Main Loop                                    #
 ###############################################################################
 
-RUN_NEURAL = False
-
-BATCH_SIZE = 16384
+RUN_NEURAL = True
 
 runs = [
-    ("Small", (64,), 2),
-    ("Medium", (16, 32, 64), 2),
-    ("Large", (16, 32, 64, 128), 4)
+    ("Small", (64,), 2, "-"),
+    ("Medium", (16, 32, 64), 2, "--"),
+    ("Large", (16, 32, 64, 128), 4, ":")
 ]
-images = ["gradient", "bricks", "clouds"]
-# images = ["starry_back", "time_spiral"]
+images = [("gradient", "blue"), ("bricks", "red"), ("clouds", "purple")]
 
 if RUN_NEURAL:
-    for image in images:
+    for (image, color) in images:
         img = load_image(f"textures/{image}.png")
         img = normalize_image(img)
-
-        # build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
+        # build coords (N, 2) of texel centers in [0, 1] and target colors (N, # 3). Do this outside of train_model loop so do not have to recompute 
+        # every time.
         coords, target = build_input_ouput_pairs(img)
-        
-        for size, resolutions, feature_dim in runs:
-            model = NeuralTexture(resolutions, feature_dim).to(get_device())
-            opt = torch.optim.Adam(model.parameters(), lr=1e-2)
 
-            # Size of image
-            N = coords.shape[0]
-            possible_indices = np.arange(N)
-
-            criterion = nn.MSELoss()
-
-            for step in range(2000):
-                # sample a minibatch of coords
-                mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
-                mini_batch_indices = torch.from_numpy(mini_batch_indices)
-
-                batch_coords = coords[mini_batch_indices]
-                batch_target = target[mini_batch_indices]
-
-                # predict colors, outputs has dimensions (BATCH_SIZE, 2)
-                predictions = model.forward(batch_coords)
-
-                # MSE loss vs target 
-                loss = criterion(predictions, batch_target)
-                opt.zero_grad(); loss.backward(); opt.step()
-
-            # for quantize in range(2):
-                # if quantize:
-            quantize_model(model, quantize_mlp=False)
-            # Get final PSNR
-            predictions = model.forward(coords)
-            final_loss = criterion(predictions, target)
-
-            # PSNR from the loss:  psnr = -10 * torch.log10(loss)
-            PSNR = -10.0 * torch.log10(final_loss)
-            print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\tfeature_dim {feature_dim}\tMLP 2 x 64\tImage: {image}")
-            print(f"PSNR: {PSNR}")
-
-            predicted_colors = (model.forward(coords)).detach().numpy()
-            reconstructed_img = np.zeros(img.shape)
-            h, w, _ = img.shape
-            for r in range(h):
-                for c in range(w):
-                    reconstructed_img[r, c, :] = predicted_colors[r * w + c]
-            converted = denormalize_image(reconstructed_img)
-            Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}_q.png")
-
+        train_model(img, coords, target, image, runs, color=color)
+    plt.title("PSNR over 2000 Training Loops")
+    plt.xlabel("Training Step")
+    plt.ylabel("PSNR (db)")
+    plt.legend()
+    plt.savefig('PSNR Over Training.png')
+    plt.figure(figsize=(12, 6))
 
 ###############################################################################
 #                           S3TC main Loop                                    #
