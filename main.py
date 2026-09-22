@@ -100,14 +100,44 @@ def dequantize_rgb(color: np.uint16):
     return C0
 
 ###############################################################################
+#`                           Calculate PSNR                                   #
+###############################################################################
+def calc_PSNR(img: np.ndarray, img2: np.ndarray):
+    pass
+
+###############################################################################
 #`                              S3TC Compression                              #
 ###############################################################################
 
-# pass in 4x4 block (r, c is top left corner of square)
-def S3TC_encode_square(img, r, c):
-    square = img[r:r+4, c:c+4]
+# Returns C0, C1
+def S3TC_pick_min_max(square: np.ndarray):
     C0 = np.min(square, axis = (0, 1))
     C1 = np.max(square, axis = (0, 1))
+    return (C0, C1)
+
+# Returns C0, C1
+def S3TC_pick_longest_dist(square: np.ndarray):
+    best_diff = float('-inf')
+    best_C0, best_C1 = None, None
+    square_flat = square.reshape(-1, 3)
+    size = square_flat.shape[0]
+    for i in range(size):
+        for j in range(i+1, size):
+            C0 = square_flat[i]
+            C1 = square_flat[j]
+            diff = C1-C0
+            norm = np.dot(diff.T, diff)
+            if norm > best_diff:
+                best_diff = norm
+                best_C0 = C0
+                best_C1 = C1
+    return (best_C0, best_C1)
+
+# pass in 4x4 block (r, c is top left corner of square)
+def S3TC_encode_square(img, r, c, pick_min_max = False):
+    square = img[r:r+4, c:c+4]
+    C0, C1 = S3TC_pick_min_max(square) if pick_min_max else S3TC_pick_longest_dist(square)
+
     # Use the quantized C0 & C1 for more accurate comparison
     (C0_565, C0) = quantize_rgb(C0)
     (C1_565, C1) = quantize_rgb(C1)
@@ -128,11 +158,8 @@ def S3TC_encode_square(img, r, c):
                 if (squared_err < best_diff):
                     best_index = np.uint32(i)
                     best_diff = squared_err
-            # assert (best_index < 4, "Index out of bound?")
-            # assert (best_index == float('inf'), "Never changed best")
             indices |= best_index << (2 * cnt)
             cnt += 1
-    # assert (16 == cnt)
 
     color_encoded = np.uint32(C0_565) << 16
     color_encoded |= np.uint16(C1_565)
@@ -171,20 +198,18 @@ def combine_32_bits(org: np.ndarray):
         res |= np.uint32(org[i]) << (i * 8)
     return np.array(res)
 
-# TODO: Make this work for any dimension
-# TODO: Write with faster numpy operations
 """ Compress a normal image with values in range [0, 1] and only RGB channels
 Only works on images that have dimensions which are multiples of 4. It not multiples of 4, gets cropped down to nearest multiple.
 [in]    img:np.ndarry   Image to compress with values in range [0, 1]
 [out]   Compressed image stored in S3TC format. Must decode using S3TC_decode
 """
-def S3TC_encode(img: np.ndarray):
+def S3TC_encode(img: np.ndarray, pick_min_max = False):
     shape = img.shape
     new_h, new_w = shape[0] // 4, shape[1] // 4
     res = np.zeros((new_h, new_w * 2, 4)).astype(np.uint8)
     for r in range(new_h):
         for c in range(new_w):
-            (color, indices) = S3TC_encode_square(img, r * 4, c * 4)
+            (color, indices) = S3TC_encode_square(img, r * 4, c * 4, pick_min_max)
             res[r, 2 * c] = split_32_bits(color)
             res[r, 2 * c + 1] = split_32_bits(indices)
     return res
@@ -298,8 +323,10 @@ def quantize_model(model, quantize_mlp=False):
             p.data.copy_(x_hat)
 
 ###############################################################################
-#                               Main Loop                                    #
+#                        Neural  Main Loop                                    #
 ###############################################################################
+
+RUN_NEURAL = False
 
 BATCH_SIZE = 16384
 
@@ -310,80 +337,102 @@ runs = [
 ]
 images = ["gradient", "bricks", "clouds"]
 # images = ["starry_back", "time_spiral"]
-for image in images:
+
+if RUN_NEURAL:
+    for image in images:
+        img = load_image(f"textures/{image}.png")
+        img = normalize_image(img)
+
+        # build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
+        coords, target = build_input_ouput_pairs(img)
+        
+        for size, resolutions, feature_dim in runs:
+            model = NeuralTexture(resolutions, feature_dim).to(get_device())
+            opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+            # Size of image
+            N = coords.shape[0]
+            possible_indices = np.arange(N)
+
+            criterion = nn.MSELoss()
+
+            for step in range(2000):
+                # sample a minibatch of coords
+                mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
+                mini_batch_indices = torch.from_numpy(mini_batch_indices)
+
+                batch_coords = coords[mini_batch_indices]
+                batch_target = target[mini_batch_indices]
+
+                # predict colors, outputs has dimensions (BATCH_SIZE, 2)
+                predictions = model.forward(batch_coords)
+
+                # MSE loss vs target 
+                loss = criterion(predictions, batch_target)
+                opt.zero_grad(); loss.backward(); opt.step()
+
+            # for quantize in range(2):
+                # if quantize:
+            quantize_model(model, quantize_mlp=False)
+            # Get final PSNR
+            predictions = model.forward(coords)
+            final_loss = criterion(predictions, target)
+
+            # PSNR from the loss:  psnr = -10 * torch.log10(loss)
+            PSNR = -10.0 * torch.log10(final_loss)
+            print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\tfeature_dim {feature_dim}\tMLP 2 x 64\tImage: {image}")
+            print(f"PSNR: {PSNR}")
+
+            predicted_colors = (model.forward(coords)).detach().numpy()
+            reconstructed_img = np.zeros(img.shape)
+            h, w, _ = img.shape
+            for r in range(h):
+                for c in range(w):
+                    reconstructed_img[r, c, :] = predicted_colors[r * w + c]
+            converted = denormalize_image(reconstructed_img)
+            Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}_q.png")
+
+
+###############################################################################
+#                           S3TC main Loop                                    #
+###############################################################################
+
+RUN_S3TC = True
+if RUN_S3TC:
+    images = ["gradient", "bricks", "clouds"]
+    for image in images:
+        img = load_image(f"textures/{image}.png")
+        img = normalize_image(img)
+        encoded = S3TC_encode(img, pick_min_max=False)
+        (Image.fromarray(encoded, mode='RGBA')).save(f"textures/{image}_encoded.png")
+        decoded = S3TC_decode(encoded)
+        converted = denormalize_image(decoded)
+        Image.fromarray(converted).save(f"textures/{image}_compressed.png")
+
+        reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
+        decoded2 = S3TC_decode(reload_decoded_img)
+        converted2 = denormalize_image(decoded2)
+        Image.fromarray(converted2).save(f"textures/{image}_compressed2.png")
+
+        # Testing minmax instead
+        encoded = S3TC_encode(img, pick_min_max=True)
+        decoded = S3TC_decode(encoded)
+        converted = denormalize_image(decoded)
+        Image.fromarray(converted).save(f"textures/{image}_compressed_min_max.png")
+
+###############################################################################
+#                        Bilinear Main Loop                                   #
+###############################################################################
+
+RUN_DOWNSAMPLE = False
+DOWNSAMPLE_RATIO = 16
+
+if RUN_DOWNSAMPLE:
+    image = "time_spiral"
     img = load_image(f"textures/{image}.png")
-    img = normalize_image(img)
-
-    # build coords (N, 2) of texel centers in [0, 1] and target colors (N, 3)
-    coords, target = build_input_ouput_pairs(img)
-    
-    for size, resolutions, feature_dim in runs:
-        model = NeuralTexture(resolutions, feature_dim).to(get_device())
-        opt = torch.optim.Adam(model.parameters(), lr=1e-2)
-
-        # Size of image
-        N = coords.shape[0]
-        possible_indices = np.arange(N)
-
-        criterion = nn.MSELoss()
-
-        for step in range(2000):
-            # sample a minibatch of coords
-            mini_batch_indices = np.random.choice(possible_indices, size=(BATCH_SIZE,), replace=(N < BATCH_SIZE))
-            mini_batch_indices = torch.from_numpy(mini_batch_indices)
-
-            batch_coords = coords[mini_batch_indices]
-            batch_target = target[mini_batch_indices]
-
-            # predict colors, outputs has dimensions (BATCH_SIZE, 2)
-            predictions = model.forward(batch_coords)
-
-            # MSE loss vs target 
-            loss = criterion(predictions, batch_target)
-            opt.zero_grad(); loss.backward(); opt.step()
-
-        # for quantize in range(2):
-            # if quantize:
-        quantize_model(model, quantize_mlp=False)
-        # Get final PSNR
-        predictions = model.forward(coords)
-        final_loss = criterion(predictions, target)
-
-        # PSNR from the loss:  psnr = -10 * torch.log10(loss)
-        PSNR = -10.0 * torch.log10(final_loss)
-        print(f"{size}\tgrid{"s" if len(resolutions) > 0 else ""}\t{resolutions}\tfeature_dim {feature_dim}\tMLP 2 x 64\tImage: {image}")
-        print(f"PSNR: {PSNR}")
-
-        predicted_colors = (model.forward(coords)).detach().numpy()
-        reconstructed_img = np.zeros(img.shape)
-        h, w, _ = img.shape
-        for r in range(h):
-            for c in range(w):
-                reconstructed_img[r, c, :] = predicted_colors[r * w + c]
-        converted = denormalize_image(reconstructed_img)
-        Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}_q.png")
-
-
-
-# img = load_image(f"textures/{image}.png")
-# img = normalize_image(img)
-# encoded = S3TC_encode(img)
-# (Image.fromarray(encoded, mode='RGBA')).save(f"textures/{image}_encoded.png")
-# decoded = S3TC_decode(encoded)
-# converted = denormalize_image(decoded)
-# # downsampled = test_bilinear_downsample(img, 1)
-# # converted = np.round(downsampled).astype(np.uint8)
-# Image.fromarray(converted).save(f"textures/{image}_compressed.png")
-
-# reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
-# decoded2 = S3TC_decode(reload_decoded_img)
-# converted2 = denormalize_image(decoded2)
-# Image.fromarray(converted2).save(f"textures/{image}_compressed2.png")
-
-
-###############################################################################
-#                              Main Loop 2                                    #
-###############################################################################
+    downsampled = test_bilinear_downsample(img, DOWNSAMPLE_RATIO)
+    converted = np.round(downsampled).astype(np.uint8)
+    Image.fromarray(converted).save(f"textures/{image}_downsampled_{DOWNSAMPLE_RATIO}.png")
 
 
 
