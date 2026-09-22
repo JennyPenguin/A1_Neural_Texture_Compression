@@ -330,8 +330,8 @@ def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: 
     
         criterion_MSE = nn.MSELoss()
 
-        x = np.arange(2000)
-        y = np.zeros((2000,))
+        x = np.arange(200)
+        y = np.zeros((200,))
     
         for i in range(2000):
             # Sample a minibatch of coords. Normally would cycle through a 
@@ -348,13 +348,15 @@ def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: 
     
             # MSE loss vs target 
             loss = criterion_MSE(predictions, batch_target)
-            PSNR = -10.0 * torch.log10(loss)
-            y[i] = PSNR.item()
+            if i % 10 == 0:
+                PSNR = -10.0 * torch.log10(loss)
+                y[i // 10] = PSNR.item()
             opt.zero_grad(); loss.backward(); opt.step()
 
         plt.plot(x, y, label=f"{image} - {size}", color=color, linestyle=line_style)
     
         # save non-quantized first and then quantized
+        print("!!!!!!!!!!!!!!!!!Results for {image}!!!!!!!!!!!!!!!!!!!!")
         for q in range(2):
             if q == 1:
                 quantize_model(model, quantize_mlp=False)
@@ -417,10 +419,12 @@ runs = [
     ("Large", (16, 32, 64, 128), 4, ":")
 ]
 images = [
-        # ("gradient", "blue"),
+        ("gradient", "blue"),
             ("bricks", "red"), 
-        #    ("clouds", "purple")
+           ("clouds", "purple")
         ]
+
+plt.figure(figsize=(12, 4), dpi=100)
 
 if RUN_NEURAL:
     for (image, color) in images:
@@ -435,8 +439,8 @@ if RUN_NEURAL:
     plt.xlabel("Training Step")
     plt.ylabel("PSNR (db)")
     plt.legend()
-    plt.savefig('PSNR Over Training.png')
-    plt.figure(figsize=(18, 6))
+    plt.tight_layout()
+    plt.savefig('textures/neural_compressed/PSNR Over Training.png', dpi=100)
 
 ###############################################################################
 #                           S3TC main Loop                                    #
