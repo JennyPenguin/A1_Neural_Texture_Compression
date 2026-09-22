@@ -102,8 +102,18 @@ def dequantize_rgb(color: np.uint16):
 ###############################################################################
 #`                           Calculate PSNR                                   #
 ###############################################################################
+
+# Assumes both images are normalized images and have the same dimension
 def calc_PSNR(img: np.ndarray, img2: np.ndarray):
-    pass
+    MSE = 0
+    img = img.reshape(-1, 3)
+    img2 = img2.reshape(-1, 3)
+    N = img.shape[0]
+    for i in range(N):
+        diff = img[i] - img2[i]
+        MSE += np.dot(diff.T, diff)
+    MSE = MSE * (1.0 / N)
+    return -10.0 * np.log10(MSE)
 
 ###############################################################################
 #`                              S3TC Compression                              #
@@ -397,9 +407,9 @@ if RUN_NEURAL:
 #                           S3TC main Loop                                    #
 ###############################################################################
 
-RUN_S3TC = True
+RUN_S3TC = False
 if RUN_S3TC:
-    images = ["gradient", "bricks", "clouds"]
+    images = ["gradient", "bricks", "clouds", "weird_image"]
     for image in images:
         img = load_image(f"textures/{image}.png")
         img = normalize_image(img)
@@ -408,6 +418,9 @@ if RUN_S3TC:
         decoded = S3TC_decode(encoded)
         converted = denormalize_image(decoded)
         Image.fromarray(converted).save(f"textures/{image}_compressed.png")
+        PSNR = calc_PSNR(img, decoded)
+
+        print(f"PSNR For image {image}: {PSNR}")
 
         reload_decoded_img = load_image(f"textures/{image}_encoded.png", rgba=True)
         decoded2 = S3TC_decode(reload_decoded_img)
