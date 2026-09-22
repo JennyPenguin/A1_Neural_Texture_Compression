@@ -378,7 +378,7 @@ def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: 
                     reconstructed_img[r, c, :] = predicted_colors[r * w + c]
             converted = denormalize_image(reconstructed_img)
             q_trail = "_q" if q == 1 else ""
-            Image.fromarray(converted).save(f"textures/{image}_NN_compressed_{size}{q_trail}.png")
+            Image.fromarray(converted).save(f"textures/neural_compressed/{image}_NN_compressed_{size}{q_trail}.png")
 
 ###############################################################################
 #                           Quantization                                      #
@@ -416,7 +416,11 @@ runs = [
     ("Medium", (16, 32, 64), 2, "--"),
     ("Large", (16, 32, 64, 128), 4, ":")
 ]
-images = [("gradient", "blue"), ("bricks", "red"), ("clouds", "purple")]
+images = [
+        # ("gradient", "blue"),
+            ("bricks", "red"), 
+        #    ("clouds", "purple")
+        ]
 
 if RUN_NEURAL:
     for (image, color) in images:
@@ -432,7 +436,7 @@ if RUN_NEURAL:
     plt.ylabel("PSNR (db)")
     plt.legend()
     plt.savefig('PSNR Over Training.png')
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(18, 6))
 
 ###############################################################################
 #                           S3TC main Loop                                    #
