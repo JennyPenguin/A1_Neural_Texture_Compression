@@ -356,7 +356,7 @@ def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: 
         plt.plot(x, y, label=f"{image} - {size}", color=color, linestyle=line_style)
     
         # save non-quantized first and then quantized
-        print("!!!!!!!!!!!!!!!!!Results for {image}!!!!!!!!!!!!!!!!!!!!")
+        print(f"!!!!!!!!!!!!!!!!!Results for {image}!!!!!!!!!!!!!!!!!!!!")
         for q in range(2):
             if q == 1:
                 quantize_model(model, quantize_mlp=False)
@@ -424,7 +424,7 @@ images = [
            ("clouds", "purple")
         ]
 
-plt.figure(figsize=(12, 4), dpi=100)
+plt.figure(figsize=(12, 8), dpi=100)
 
 if RUN_NEURAL:
     for (image, color) in images:
