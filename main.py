@@ -323,7 +323,10 @@ def train_model(img: np.ndarray, coords: np.ndarray, target: np.ndarray, image: 
     for size, resolutions, feature_dim, line_style in runs:
         model = NeuralTexture(resolutions, feature_dim).to(get_device())
         opt = torch.optim.Adam(model.parameters(), lr=1e-2)
-    
+
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Trainable parameters: {trainable_params} for size {size}")
+
         # Size of image
         N = coords.shape[0]
         possible_indices = np.arange(N)
@@ -419,16 +422,26 @@ runs = [
     ("Large", (16, 32, 64, 128), 4, ":")
 ]
 images = [
-        ("gradient", "blue"),
+            ("gradient", "blue"),
             ("bricks", "red"), 
-           ("clouds", "purple")
-        ]
+            ("clouds", "purple")
+         ]
+# images = [
+#             # ("Digital", "red"),
+#             ("Moon", "blue"), 
+#             ("Night", "pink"),
+#             # ("ocean", "black"),
+#             ("car", "orange"), 
+#             # ("noodle", "green"),
+#             # ("scotty", "purple"), 
+#             # ("galaxy", "brown")
+#         ]
 
 plt.figure(figsize=(12, 8), dpi=100)
 
 if RUN_NEURAL:
     for (image, color) in images:
-        img = load_image(f"textures/{image}.png")
+        img = load_image(f"textures/neural_compressed/{image}.png")
         img = normalize_image(img)
         # build coords (N, 2) of texel centers in [0, 1] and target colors (N, # 3). Do this outside of train_model loop so do not have to recompute 
         # every time.
@@ -477,10 +490,10 @@ if RUN_S3TC:
 ###############################################################################
 
 RUN_DOWNSAMPLE = False
-DOWNSAMPLE_RATIO = 16
+DOWNSAMPLE_RATIO = 4
 
 if RUN_DOWNSAMPLE:
-    image = "time_spiral"
+    image = "Night"
     img = load_image(f"textures/{image}.png")
     downsampled = test_bilinear_downsample(img, DOWNSAMPLE_RATIO)
     converted = np.round(downsampled).astype(np.uint8)
