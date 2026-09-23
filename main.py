@@ -433,7 +433,6 @@ images = [
 #             # ("ocean", "black"),
 #             ("car", "orange"), 
 #             # ("noodle", "green"),
-#             # ("scotty", "purple"), 
 #             # ("galaxy", "brown")
 #         ]
 
