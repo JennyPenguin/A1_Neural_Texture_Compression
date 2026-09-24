@@ -411,10 +411,10 @@ def quantize_model(model, quantize_mlp=False):
             p.data.copy_(x_hat)
 
 ###############################################################################
-#                        Neural Main Loop                                    #
+#                        Neural Main Loop                                     #
 ###############################################################################
 
-RUN_NEURAL = True
+RUN_NEURAL = False
 
 runs = [
     ("Small", (64,), 2, "-"),
