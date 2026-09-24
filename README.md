@@ -64,7 +64,7 @@ runs = [
     ("Large", (16, 32, 64, 128), 4, ":")
 ]
 ```
-Note that the architectures is shared across all images.
+Note that the architectures is shared across all images. The last value in the tuple of each architecture is the linestyle for the model in the PSNR training plot.
 
 To change the images, change
 ```python
